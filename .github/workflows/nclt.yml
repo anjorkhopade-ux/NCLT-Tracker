@@ -10,8 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
-      max-parallel: 1        # one bench at a time (your "break in between")
-      matrix:
+    fail-fast: false
+    max-parallel: 1
+    matrix:
         bench:
           - { value: 'delhi_1',   label: 'Principal Bench' }
           - { value: 'delhi_2',   label: 'New Delhi Bench Court-II' }

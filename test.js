@@ -4,14 +4,14 @@ const { google } = require('googleapis');
 const SPREADSHEET_ID = '1hUtPgK-tCE0GOUmjkfjrVBlGVylxKNddVeK1_5xarDY';
 const SHEET_NAME = 'Sheet1';
 
-// ==== CONFIG ====
+// ==== CONFIG (bench comes from GitHub; falls back to Amravati locally) ====
 const BENCH = {
   value: process.env.BENCH_VALUE || 'amravati',
   label: process.env.BENCH_LABEL || 'Amravati'
 };
 const DATE_WINDOW_DAYS = 45;
-const DISPOSED_ONLY = true;          // set true to capture only disposed
-// ================
+const DISPOSED_ONLY = true;
+// =========================================================================
 
 const DELAY_BETWEEN_CASES_MS = 2500;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -32,8 +32,8 @@ function getDateRange() {
 
 async function runSearch(page, benchValue, fromDate, toDate) {
   await page.goto('https://nclt.gov.in/order-date-wise', { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(4000);
-  await page.waitForSelector('#bench', { timeout: 30000 });
+  await page.waitForTimeout(5000);
+  await page.waitForSelector('#bench', { timeout: 60000 });
   await page.selectOption('#bench', benchValue);
   await page.evaluate(({ fromDate, toDate }) => {
     const setVal = (id, val) => {
@@ -48,8 +48,11 @@ async function runSearch(page, benchValue, fromDate, toDate) {
   }, { fromDate, toDate });
   const raw = await page.locator('#mainCaptcha').textContent();
   await page.fill('#txtInput', raw.replace(/\s/g, ''));
-    await page.click('button[type="submit"]:has-text("Search")');
-  // Wait for either the results table OR a "no records" state, with a generous timeout
+
+  // Click Search without waiting for navigation (that was timing out in the cloud)
+  await page.click('button[type="submit"]:has-text("Search")', { noWaitAfter: true });
+
+  // Wait specifically for the results table to appear (or give up gracefully)
   await page.waitForSelector('table.table-borderd tbody tr', { timeout: 60000 }).catch(() => {});
 }
 
@@ -93,16 +96,15 @@ async function readOrderFromTab(tab) {
 
 async function getSheetsClient() {
   const auth = new google.auth.GoogleAuth({
-  credentials: process.env.GOOGLE_CREDENTIALS
-    ? JSON.parse(process.env.GOOGLE_CREDENTIALS)   // GitHub: from secret
-    : undefined,
-  keyFile: process.env.GOOGLE_CREDENTIALS ? undefined : 'credentials.json', // local: from file
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-});
+    credentials: process.env.GOOGLE_CREDENTIALS
+      ? JSON.parse(process.env.GOOGLE_CREDENTIALS)
+      : undefined,
+    keyFile: process.env.GOOGLE_CREDENTIALS ? undefined : 'credentials.json',
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
   return google.sheets({ version: 'v4', auth });
 }
 
-// Added "Listing Date" column so we can detect changes without opening detail pages
 const HEADERS = ['Bench', 'Filing No', 'Case No', 'Parties', 'Status',
                  'Listing Date', 'Latest Order Date', 'PDF Link', 'Last Checked'];
 
@@ -119,7 +121,6 @@ async function readExisting(sheets) {
     return new Map();
   }
   const map = new Map();
-  // filingNo -> { rowNumber, listingDate }
   rows.slice(1).forEach((r, i) => {
     if (r[1]) map.set(r[1], { rowNumber: i + 2, listingDate: r[5] || '' });
   });
@@ -189,13 +190,11 @@ function isDisposed(statusText) {
       c.parties = cleanText(c.parties);
       const existing = existingMap.get(c.filingNo);
 
-      // SKIP: already in sheet with the same listing date → no change, don't open
       if (existing && existing.listingDate === (c.listingDate || '')) {
         counts.skipped++;
         continue;
       }
 
-      // Otherwise: new case OR listing date advanced → open detail page
       const linkLocator = page.locator('table.table-borderd tbody tr a').nth(c.rowIndex);
       try {
         const [tab] = await Promise.all([
@@ -236,7 +235,7 @@ function isDisposed(statusText) {
     try {
       await nextLink.first().click();
       await page.waitForTimeout(1500);
-      await page.waitForLoadState('networkidle').catch(() => {});
+      await page.waitForSelector('table.table-borderd tbody tr', { timeout: 30000 }).catch(() => {});
     } catch { break; }
     pageNum++;
     if (pageNum > 500) { console.log('Page cap hit.'); break; }
