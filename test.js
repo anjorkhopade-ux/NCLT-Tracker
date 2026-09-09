@@ -48,8 +48,9 @@ async function runSearch(page, benchValue, fromDate, toDate) {
   }, { fromDate, toDate });
   const raw = await page.locator('#mainCaptcha').textContent();
   await page.fill('#txtInput', raw.replace(/\s/g, ''));
-  await page.click('button[type="submit"]:has-text("Search")');
-  await page.waitForLoadState('networkidle');
+    await page.click('button[type="submit"]:has-text("Search")');
+  // Wait for either the results table OR a "no records" state, with a generous timeout
+  await page.waitForSelector('table.table-borderd tbody tr', { timeout: 60000 }).catch(() => {});
 }
 
 async function scrapeCurrentPageRows(page) {
@@ -163,7 +164,7 @@ function isDisposed(statusText) {
   const browser = await chromium.launch({ headless: true });
   const context = browser.contexts()[0] || await browser.newContext();
   const page = await context.newPage();
-  page.setDefaultNavigationTimeout(45000);
+  page.setDefaultNavigationTimeout(90000);
 
   console.log('Searching...');
   await runSearch(page, BENCH.value, fromDate, toDate);
