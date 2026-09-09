@@ -3,12 +3,37 @@ name: NCLT Tracker
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 20 * * *'
+    - cron: '30 18 * * *'   # first bench ~12:00 AM India time (18:30 UTC)
 
 jobs:
-  amravati:
+  run-bench:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 350
+    strategy:
+      max-parallel: 1        # one bench at a time (your "break in between")
+      matrix:
+        bench:
+          - { value: 'delhi_1',   label: 'Principal Bench' }
+          - { value: 'delhi_2',   label: 'New Delhi Bench Court-II' }
+          - { value: 'delhi_3',   label: 'New Delhi Bench Court-III' }
+          - { value: 'delhi_4',   label: 'New Delhi Bench Court-IV' }
+          - { value: 'delhi_5',   label: 'New Delhi Bench Court-V' }
+          - { value: 'delhi_6',   label: 'New Delhi Bench Court-VI' }
+          - { value: 'ahmedabad', label: 'Ahmedabad' }
+          - { value: 'allahabad', label: 'Allahabad' }
+          - { value: 'amravati',  label: 'Amravati' }
+          - { value: 'bengaluru', label: 'Bengaluru' }
+          - { value: 'chandigarh',label: 'Chandigarh' }
+          - { value: 'chennai',   label: 'Chennai' }
+          - { value: 'cuttak',    label: 'Cuttak' }
+          - { value: 'guwahati',  label: 'Guwahati' }
+          - { value: 'hyderabad', label: 'Hyderabad' }
+          - { value: 'indore',    label: 'Indore' }
+          - { value: 'jaipur',    label: 'Jaipur' }
+          - { value: 'kochi',     label: 'Kochi' }
+          - { value: 'kolkata',   label: 'Kolkata' }
+          - { value: 'mumbai',    label: 'Mumbai' }
+
     steps:
       - name: Get the code
         uses: actions/checkout@v4
@@ -16,7 +41,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install dependencies
         run: npm install
@@ -24,9 +49,9 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
-      - name: Run Amravati
+      - name: Run ${{ matrix.bench.label }}
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          BENCH_VALUE: amravati
-          BENCH_LABEL: Amravati
+          BENCH_VALUE: ${{ matrix.bench.value }}
+          BENCH_LABEL: ${{ matrix.bench.label }}
         run: node test.js
