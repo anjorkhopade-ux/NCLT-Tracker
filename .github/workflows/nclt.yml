@@ -3,16 +3,16 @@ name: NCLT Tracker
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 6 * * *'   # first bench ~12:00 AM India time (18:30 UTC)
+    - cron: '30 6 * * *'
 
 jobs:
   run-bench:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
-    fail-fast: false
-    max-parallel: 1
-    matrix:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
         bench:
           - { value: 'delhi_1',   label: 'Principal Bench' }
           - { value: 'delhi_2',   label: 'New Delhi Bench Court-II' }
@@ -34,7 +34,6 @@ jobs:
           - { value: 'kochi',     label: 'Kochi' }
           - { value: 'kolkata',   label: 'Kolkata' }
           - { value: 'mumbai',    label: 'Mumbai' }
-
     steps:
       - name: Get the code
         uses: actions/checkout@v4
