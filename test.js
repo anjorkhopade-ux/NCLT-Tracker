@@ -30,6 +30,34 @@ function getDateRange() {
   return { fromDate: fmt(past), toDate: fmt(today) };
 }
 
+// Finds the results table regardless of its CSS class, by matching header text.
+// Returns a Playwright locator string approach via a shared selector function.
+function resultsRowsSelector() {
+  // We select rows from any table that contains a "Filing No" header.
+  // Playwright can't do :has on header text easily across tbody, so we use a page function instead.
+  return 'table';
+}
+
+async function waitForResults(page, timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const found = await page.evaluate(() => {
+      const tables = Array.from(document.querySelectorAll('table'));
+      for (const t of tables) {
+        const head = (t.querySelector('thead')?.innerText || t.innerText || '').toLowerCase();
+        if (head.includes('filing no') && head.includes('case no')) {
+          const bodyRows = t.querySelectorAll('tbody tr');
+          if (bodyRows.length > 0) return true;
+        }
+      }
+      return false;
+    }).catch(() => false);
+    if (found) return true;
+    await page.waitForTimeout(1000);
+  }
+  return false;
+}
+
 async function runSearch(page, benchValue, fromDate, toDate) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     console.log(`  Search attempt ${attempt}...`);
@@ -40,7 +68,6 @@ async function runSearch(page, benchValue, fromDate, toDate) {
     await page.selectOption('#bench', benchValue);
     await page.waitForTimeout(800);
 
-    // Set the date fields via JS
     await page.evaluate(({ fromDate, toDate }) => {
       const setVal = (id, val) => {
         const el = document.getElementById(id);
@@ -55,7 +82,6 @@ async function runSearch(page, benchValue, fromDate, toDate) {
     }, { fromDate, toDate });
     await page.waitForTimeout(1000);
 
-    // Wait until the CAPTCHA actually has digits (not empty)
     let captchaText = '';
     for (let i = 0; i < 20; i++) {
       const raw = await page.locator('#mainCaptcha').textContent();
@@ -63,14 +89,7 @@ async function runSearch(page, benchValue, fromDate, toDate) {
       if (captchaText.length >= 4) break;
       await page.waitForTimeout(500);
     }
-
-    // Verify the form actually holds our values right before submit
-    const formState = await page.evaluate(() => ({
-      bench: document.getElementById('bench')?.value,
-      from: document.getElementById('fromdate')?.value,
-      to: document.getElementById('todate')?.value,
-    }));
-    console.log(`    CAPTCHA="${captchaText}" | bench=${formState.bench} from=${formState.from} to=${formState.to}`);
+    console.log(`    CAPTCHA="${captchaText}"`);
 
     if (captchaText.length < 4) {
       console.log('    CAPTCHA was empty/short, retrying...');
@@ -80,27 +99,26 @@ async function runSearch(page, benchValue, fromDate, toDate) {
     await page.fill('#txtInput', captchaText);
     await page.click('button[type="submit"]:has-text("Search")', { noWaitAfter: true });
 
-    const gotResults = await page.waitForSelector('table.table-borderd tbody tr', { timeout: 30000 })
-      .then(() => true).catch(() => false);
-
+    const gotResults = await waitForResults(page, 40000);
     if (gotResults) {
       console.log('    Results table appeared.');
       return true;
     }
 
-    // DIAGNOSTIC: capture what the page actually shows after the failed search
-    const diag = await page.evaluate(() => {
-      const bodyText = (document.body.innerText || '').replace(/\s+/g, ' ').trim();
+    // Distinguish "genuinely no records" from a real failure
+    const pageInfo = await page.evaluate(() => {
+      const t = (document.body.innerText || '').toLowerCase();
       return {
-        url: location.href,
-        hasTable: !!document.querySelector('table.table-borderd'),
-        snippet: bodyText.slice(0, 700),
+        noRecords: t.includes('no record') || t.includes('no data') || t.includes('not found'),
+        snippet: (document.body.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300),
       };
-    }).catch(e => ({ url: 'eval-failed', snippet: e.message }));
-    console.log(`    [DIAG] url=${diag.url} hasTable=${diag.hasTable}`);
-    console.log(`    [DIAG] pageText="${diag.snippet}"`);
+    }).catch(() => ({ noRecords: false, snippet: 'eval-failed' }));
 
-    console.log('    No results table after search, retrying...');
+    if (pageInfo.noRecords) {
+      console.log('    Site reports no records for this bench/date range.');
+      return 'norecords';
+    }
+    console.log(`    No results yet. page="${pageInfo.snippet}" retrying...`);
     await page.waitForTimeout(3000);
   }
   console.log('  All search attempts failed.');
@@ -109,7 +127,15 @@ async function runSearch(page, benchValue, fromDate, toDate) {
 
 async function scrapeCurrentPageRows(page) {
   return page.evaluate(() => {
-    const rows = Array.from(document.querySelectorAll('table.table-borderd tbody tr'));
+    // Find the results table by its header text (class-independent)
+    const tables = Array.from(document.querySelectorAll('table'));
+    let target = null;
+    for (const t of tables) {
+      const head = (t.querySelector('thead')?.innerText || t.innerText || '').toLowerCase();
+      if (head.includes('filing no') && head.includes('case no')) { target = t; break; }
+    }
+    if (!target) return [];
+    const rows = Array.from(target.querySelectorAll('tbody tr'));
     return rows.map((row, idx) => {
       const cells = row.querySelectorAll('td');
       const link = row.querySelector('a');
@@ -119,7 +145,7 @@ async function scrapeCurrentPageRows(page) {
         caseNo:      cells[2]?.textContent.trim(),
         parties:     cells[3]?.textContent.trim(),
         listingDate: cells[4]?.textContent.trim(),
-        status:      link?.textContent.trim(),
+        status:      link?.textContent.trim() || cells[5]?.textContent.trim(),
       };
     });
   });
@@ -221,7 +247,7 @@ function isDisposed(statusText) {
   console.log('Searching...');
   const searchOk = await runSearch(page, BENCH.value, fromDate, toDate);
 
-  if (!searchOk || !(await page.locator('table.table-borderd tbody tr').count())) {
+  if (!searchOk || searchOk === 'norecords') {
     console.log('No cases found for this bench/date range (after retries).');
     await browser.close();
     return;
@@ -231,7 +257,7 @@ function isDisposed(statusText) {
   let pageNum = 1;
 
   while (true) {
-    await page.waitForSelector('table.table-borderd tbody tr', { timeout: 30000 }).catch(() => {});
+    await waitForResults(page, 30000);
     let rows = await scrapeCurrentPageRows(page);
     if (DISPOSED_ONLY) rows = rows.filter(r => isDisposed(r.status));
 
@@ -246,7 +272,7 @@ function isDisposed(statusText) {
         continue;
       }
 
-      const linkLocator = page.locator('table.table-borderd tbody tr a').nth(c.rowIndex);
+      const linkLocator = page.locator('table:has(th:has-text("Filing No")) tbody tr a').nth(c.rowIndex);
       try {
         const [tab] = await Promise.all([
           context.waitForEvent('page'),
@@ -286,7 +312,7 @@ function isDisposed(statusText) {
     try {
       await nextLink.first().click();
       await page.waitForTimeout(1500);
-      await page.waitForSelector('table.table-borderd tbody tr', { timeout: 30000 }).catch(() => {});
+      await waitForResults(page, 30000);
     } catch { break; }
     pageNum++;
     if (pageNum > 500) { console.log('Page cap hit.'); break; }
