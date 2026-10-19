@@ -56,10 +56,18 @@ async function runSearch(page, benchValue, fromDate, toDate) {
     for (let i = 0; i < 20; i++) {
       const raw = await page.locator('#mainCaptcha').textContent();
       captchaText = (raw || '').replace(/\s/g, '');
-      if (captchaText.length >= 4) break;   // got the digits
+      if (captchaText.length >= 4) break;
       await page.waitForTimeout(500);
     }
     console.log(`    CAPTCHA read as: "${captchaText}"`);
+
+    // Also log what's actually in the dropdown/date fields right before submit
+    const formState = await page.evaluate(() => ({
+      bench: document.getElementById('bench')?.value,
+      from: document.getElementById('fromdate')?.value,
+      to: document.getElementById('todate')?.value,
+      captchaInput: document.getElementById('txtInput')?.value,
+    }));
 
     if (captchaText.length < 4) {
       console.log('    CAPTCHA was empty/short, retrying...');
@@ -67,16 +75,31 @@ async function runSearch(page, benchValue, fromDate, toDate) {
     }
 
     await page.fill('#txtInput', captchaText);
+    console.log(`    Submitting: bench=${formState.bench} from=${formState.from} to=${formState.to}`);
     await page.click('button[type="submit"]:has-text("Search")', { noWaitAfter: true });
 
-    // Wait for the results table OR a "no records" message
-    const gotResults = await page.waitForSelector('table.table-borderd tbody tr', { timeout: 45000 })
+    // Wait for results table OR give up, then capture what the page shows
+    const gotResults = await page.waitForSelector('table.table-borderd tbody tr', { timeout: 30000 })
       .then(() => true).catch(() => false);
 
     if (gotResults) {
       console.log('    Results table appeared.');
       return true;
     }
+
+    // DIAGNOSTIC: capture what the page actually shows after the failed search
+    const diag = await page.evaluate(() => {
+      const bodyText = (document.body.innerText || '').replace(/\s+/g, ' ').trim();
+      return {
+        url: location.href,
+        hasTable: !!document.querySelector('table.table-borderd'),
+        snippet: bodyText.slice(0, 600),
+      };
+    }).catch(e => ({ url: 'eval-failed', snippet: e.message }));
+    console.log(`    [DIAG] url=${diag.url}`);
+    console.log(`    [DIAG] hasTable=${diag.hasTable}`);
+    console.log(`    [DIAG] pageText="${diag.snippet}"`);
+
     console.log('    No results table after search, retrying...');
     await page.waitForTimeout(3000);
   }
