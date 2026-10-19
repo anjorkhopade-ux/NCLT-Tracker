@@ -35,10 +35,12 @@ async function runSearch(page, benchValue, fromDate, toDate) {
     console.log(`  Search attempt ${attempt}...`);
     await page.goto('https://nclt.gov.in/order-date-wise', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#bench', { timeout: 60000 });
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(2500);
 
     await page.selectOption('#bench', benchValue);
+    await page.waitForTimeout(800);
 
+    // Set the date fields via JS
     await page.evaluate(({ fromDate, toDate }) => {
       const setVal = (id, val) => {
         const el = document.getElementById(id);
@@ -46,10 +48,12 @@ async function runSearch(page, benchValue, fromDate, toDate) {
         el.value = val;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
       };
       setVal('fromdate', fromDate);
       setVal('todate', toDate);
     }, { fromDate, toDate });
+    await page.waitForTimeout(1000);
 
     // Wait until the CAPTCHA actually has digits (not empty)
     let captchaText = '';
@@ -59,15 +63,14 @@ async function runSearch(page, benchValue, fromDate, toDate) {
       if (captchaText.length >= 4) break;
       await page.waitForTimeout(500);
     }
-    console.log(`    CAPTCHA read as: "${captchaText}"`);
 
-    // Also log what's actually in the dropdown/date fields right before submit
+    // Verify the form actually holds our values right before submit
     const formState = await page.evaluate(() => ({
       bench: document.getElementById('bench')?.value,
       from: document.getElementById('fromdate')?.value,
       to: document.getElementById('todate')?.value,
-      captchaInput: document.getElementById('txtInput')?.value,
     }));
+    console.log(`    CAPTCHA="${captchaText}" | bench=${formState.bench} from=${formState.from} to=${formState.to}`);
 
     if (captchaText.length < 4) {
       console.log('    CAPTCHA was empty/short, retrying...');
@@ -75,10 +78,8 @@ async function runSearch(page, benchValue, fromDate, toDate) {
     }
 
     await page.fill('#txtInput', captchaText);
-    console.log(`    Submitting: bench=${formState.bench} from=${formState.from} to=${formState.to}`);
     await page.click('button[type="submit"]:has-text("Search")', { noWaitAfter: true });
 
-    // Wait for results table OR give up, then capture what the page shows
     const gotResults = await page.waitForSelector('table.table-borderd tbody tr', { timeout: 30000 })
       .then(() => true).catch(() => false);
 
@@ -93,11 +94,10 @@ async function runSearch(page, benchValue, fromDate, toDate) {
       return {
         url: location.href,
         hasTable: !!document.querySelector('table.table-borderd'),
-        snippet: bodyText.slice(0, 600),
+        snippet: bodyText.slice(0, 700),
       };
     }).catch(e => ({ url: 'eval-failed', snippet: e.message }));
-    console.log(`    [DIAG] url=${diag.url}`);
-    console.log(`    [DIAG] hasTable=${diag.hasTable}`);
+    console.log(`    [DIAG] url=${diag.url} hasTable=${diag.hasTable}`);
     console.log(`    [DIAG] pageText="${diag.snippet}"`);
 
     console.log('    No results table after search, retrying...');
