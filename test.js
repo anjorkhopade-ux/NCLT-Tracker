@@ -31,29 +31,57 @@ function getDateRange() {
 }
 
 async function runSearch(page, benchValue, fromDate, toDate) {
-  await page.goto('https://nclt.gov.in/order-date-wise', { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(5000);
-  await page.waitForSelector('#bench', { timeout: 60000 });
-  await page.selectOption('#bench', benchValue);
-  await page.evaluate(({ fromDate, toDate }) => {
-    const setVal = (id, val) => {
-      const el = document.getElementById(id);
-      el.removeAttribute('readonly');
-      el.value = val;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-    setVal('fromdate', fromDate);
-    setVal('todate', toDate);
-  }, { fromDate, toDate });
-  const raw = await page.locator('#mainCaptcha').textContent();
-  await page.fill('#txtInput', raw.replace(/\s/g, ''));
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    console.log(`  Search attempt ${attempt}...`);
+    await page.goto('https://nclt.gov.in/order-date-wise', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#bench', { timeout: 60000 });
+    await page.waitForTimeout(2000);
 
-  // Click Search without waiting for navigation (that was timing out in the cloud)
-  await page.click('button[type="submit"]:has-text("Search")', { noWaitAfter: true });
+    await page.selectOption('#bench', benchValue);
 
-  // Wait specifically for the results table to appear (or give up gracefully)
-  await page.waitForSelector('table.table-borderd tbody tr', { timeout: 60000 }).catch(() => {});
+    await page.evaluate(({ fromDate, toDate }) => {
+      const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        el.removeAttribute('readonly');
+        el.value = val;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      setVal('fromdate', fromDate);
+      setVal('todate', toDate);
+    }, { fromDate, toDate });
+
+    // Wait until the CAPTCHA actually has digits (not empty)
+    let captchaText = '';
+    for (let i = 0; i < 20; i++) {
+      const raw = await page.locator('#mainCaptcha').textContent();
+      captchaText = (raw || '').replace(/\s/g, '');
+      if (captchaText.length >= 4) break;   // got the digits
+      await page.waitForTimeout(500);
+    }
+    console.log(`    CAPTCHA read as: "${captchaText}"`);
+
+    if (captchaText.length < 4) {
+      console.log('    CAPTCHA was empty/short, retrying...');
+      continue;
+    }
+
+    await page.fill('#txtInput', captchaText);
+    await page.click('button[type="submit"]:has-text("Search")', { noWaitAfter: true });
+
+    // Wait for the results table OR a "no records" message
+    const gotResults = await page.waitForSelector('table.table-borderd tbody tr', { timeout: 45000 })
+      .then(() => true).catch(() => false);
+
+    if (gotResults) {
+      console.log('    Results table appeared.');
+      return true;
+    }
+    console.log('    No results table after search, retrying...');
+    await page.waitForTimeout(3000);
+  }
+  console.log('  All search attempts failed.');
+  return false;
 }
 
 async function scrapeCurrentPageRows(page) {
@@ -156,7 +184,7 @@ function isDisposed(statusText) {
 // ---- MAIN ----
 (async () => {
   const { fromDate, toDate } = getDateRange();
-  console.log(`Bench: ${BENCH.label} | ${fromDate} → ${toDate} (${DATE_WINDOW_DAYS} days) | Disposed only: ${DISPOSED_ONLY}`);
+  console.log(`Bench: ${BENCH.label} | ${fromDate} -> ${toDate} (${DATE_WINDOW_DAYS} days) | Disposed only: ${DISPOSED_ONLY}`);
   const startTime = Date.now();
 
   const sheets = await getSheetsClient();
@@ -168,10 +196,10 @@ function isDisposed(statusText) {
   page.setDefaultNavigationTimeout(90000);
 
   console.log('Searching...');
-  await runSearch(page, BENCH.value, fromDate, toDate);
+  const searchOk = await runSearch(page, BENCH.value, fromDate, toDate);
 
-  if (!(await page.locator('table.table-borderd tbody tr').count())) {
-    console.log('No cases found for this bench/date range.');
+  if (!searchOk || !(await page.locator('table.table-borderd tbody tr').count())) {
+    console.log('No cases found for this bench/date range (after retries).');
     await browser.close();
     return;
   }
@@ -208,24 +236,24 @@ function isDisposed(statusText) {
 
         if (order.blocked) {
           counts.failed++;
-          console.log(`  ${c.caseNo} → BLOCKED (session)`);
+          console.log(`  ${c.caseNo} -> BLOCKED (session)`);
         } else {
           c.latestOrderDate = order.dateOfListing;
           c.latestOrderPdf  = order.pdfUrl;
           if (!existing) {
             await appendCase(sheets, existingMap, BENCH.label, c);
             counts.new++;
-            console.log(`  ${c.caseNo} → ${c.latestOrderDate || 'no order'} (new)`);
+            console.log(`  ${c.caseNo} -> ${c.latestOrderDate || 'no order'} (new)`);
           } else {
             await updateCase(sheets, existing.rowNumber, BENCH.label, c);
             existing.listingDate = c.listingDate || '';
             counts.updated++;
-            console.log(`  ${c.caseNo} → ${c.latestOrderDate || 'no order'} (updated)`);
+            console.log(`  ${c.caseNo} -> ${c.latestOrderDate || 'no order'} (updated)`);
           }
         }
       } catch (err) {
         counts.failed++;
-        console.log(`  ${c.caseNo} → FAILED: ${err.message.split('\n')[0]}`);
+        console.log(`  ${c.caseNo} -> FAILED: ${err.message.split('\n')[0]}`);
       }
       await sleep(DELAY_BETWEEN_CASES_MS);
     }
