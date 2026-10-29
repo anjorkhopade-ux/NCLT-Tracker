@@ -3,7 +3,9 @@ name: NCLT Tracker
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 6 * * *'
+    - cron: '0 5 * * *'    # 10:30 AM IST
+    - cron: '0 9 * * *'    # 2:30 PM IST
+    - cron: '0 13 * * *'   # 6:30 PM IST
 
 jobs:
   run-bench:
