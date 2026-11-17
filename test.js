@@ -30,12 +30,15 @@ function getDateRange() {
   return { fromDate: fmt(past), toDate: fmt(today) };
 }
 
-// Finds the results table regardless of its CSS class, by matching header text.
-// Returns a Playwright locator string approach via a shared selector function.
-function resultsRowsSelector() {
-  // We select rows from any table that contains a "Filing No" header.
-  // Playwright can't do :has on header text easily across tbody, so we use a page function instead.
-  return 'table';
+// Parse a DD-MM-YYYY or DD/MM/YYYY date string into a comparable number (YYYYMMDD), or null.
+function dateKey(s) {
+  if (!s) return null;
+  const m = String(s).trim().match(/(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
+  if (!m) return null;
+  const dd = m[1].padStart(2, '0');
+  const mm = m[2].padStart(2, '0');
+  const yyyy = m[3];
+  return Number(`${yyyy}${mm}${dd}`);
 }
 
 async function waitForResults(page, timeoutMs) {
@@ -105,7 +108,6 @@ async function runSearch(page, benchValue, fromDate, toDate) {
       return true;
     }
 
-    // Distinguish "genuinely no records" from a real failure
     const pageInfo = await page.evaluate(() => {
       const t = (document.body.innerText || '').toLowerCase();
       return {
@@ -127,7 +129,6 @@ async function runSearch(page, benchValue, fromDate, toDate) {
 
 async function scrapeCurrentPageRows(page) {
   return page.evaluate(() => {
-    // Find the results table by its header text (class-independent)
     const tables = Array.from(document.querySelectorAll('table'));
     let target = null;
     for (const t of tables) {
@@ -198,8 +199,13 @@ async function readExisting(sheets) {
     return new Map();
   }
   const map = new Map();
+  // Store BOTH the listing date (col F = index 5) and the latest order date (col G = index 6)
   rows.slice(1).forEach((r, i) => {
-    if (r[1]) map.set(r[1], { rowNumber: i + 2, listingDate: r[5] || '' });
+    if (r[1]) map.set(r[1], {
+      rowNumber: i + 2,
+      listingDate: r[5] || '',
+      orderDate: r[6] || '',
+    });
   });
   return map;
 }
@@ -213,7 +219,11 @@ async function appendCase(sheets, existingMap, benchLabel, c) {
     valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [row] },
   });
-  existingMap.set(c.filingNo, { rowNumber: -1, listingDate: c.listingDate || '' });
+  existingMap.set(c.filingNo, {
+    rowNumber: -1,
+    listingDate: c.listingDate || '',
+    orderDate: c.latestOrderDate || '',
+  });
 }
 
 async function updateCase(sheets, rowNumber, benchLabel, c) {
@@ -233,6 +243,7 @@ function isDisposed(statusText) {
 // ---- MAIN ----
 (async () => {
   const { fromDate, toDate } = getDateRange();
+  const windowStartKey = dateKey(fromDate); // earliest date in the current window
   console.log(`Bench: ${BENCH.label} | ${fromDate} -> ${toDate} (${DATE_WINDOW_DAYS} days) | Disposed only: ${DISPOSED_ONLY}`);
   const startTime = Date.now();
 
@@ -267,9 +278,27 @@ function isDisposed(statusText) {
       c.parties = cleanText(c.parties);
       const existing = existingMap.get(c.filingNo);
 
-      if (existing && existing.listingDate === (c.listingDate || '')) {
-        counts.skipped++;
-        continue;
+      // --- NEW SKIP RULE (safe) ---
+      // Skip ONLY if the case is already stored AND its results-row listing date
+      // is OLDER than the start of the current window (i.e. it cannot have a new
+      // order inside the window). Any case whose listing date falls within the
+      // window is re-opened and re-checked, so fresh orders are never missed.
+      if (existing) {
+        const rowKey = dateKey(c.listingDate);
+        if (rowKey !== null && windowStartKey !== null && rowKey < windowStartKey) {
+          counts.skipped++;
+          continue;
+        }
+        // If the stored listing date already equals this row's listing date AND
+        // we've already recorded an order on/after it, skip to save time.
+        if (existing.listingDate && c.listingDate &&
+            existing.listingDate.trim() === c.listingDate.trim() &&
+            dateKey(existing.orderDate) !== null &&
+            dateKey(existing.listingDate) !== null &&
+            dateKey(existing.orderDate) >= dateKey(existing.listingDate)) {
+          counts.skipped++;
+          continue;
+        }
       }
 
       const linkLocator = page.locator('table:has(th:has-text("Filing No")) tbody tr a').nth(c.rowIndex);
@@ -294,10 +323,19 @@ function isDisposed(statusText) {
             counts.new++;
             console.log(`  ${c.caseNo} -> ${c.latestOrderDate || 'no order'} (new)`);
           } else {
+            // Only count/write as updated if the order date actually changed
+            const newKey = dateKey(c.latestOrderDate);
+            const oldKey = dateKey(existing.orderDate);
             await updateCase(sheets, existing.rowNumber, BENCH.label, c);
             existing.listingDate = c.listingDate || '';
-            counts.updated++;
-            console.log(`  ${c.caseNo} -> ${c.latestOrderDate || 'no order'} (updated)`);
+            existing.orderDate = c.latestOrderDate || '';
+            if (newKey !== oldKey) {
+              counts.updated++;
+              console.log(`  ${c.caseNo} -> ${c.latestOrderDate || 'no order'} (UPDATED from ${existing.orderDate})`);
+            } else {
+              counts.skipped++;
+              console.log(`  ${c.caseNo} -> ${c.latestOrderDate || 'no order'} (rechecked, unchanged)`);
+            }
           }
         }
       } catch (err) {
